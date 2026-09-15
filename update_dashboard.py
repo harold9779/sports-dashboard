@@ -240,6 +240,7 @@ def generate_html(data):
     else:
         print('WARNING: template.html not found, using inline fallback')
         html = get_inline_template(data_json)
+        html = html.replace('__DATA_PLACEHOLDER__', data_json)
     return html
 
 def get_inline_template(data_json):
