@@ -623,7 +623,7 @@ function initCharts(){
 
   var hc=data.filter(function(m){return m.companies&&Object.keys(m.companies).length>1});
   var cl2=hc.slice(0,8).map(function(m){return m.home.substring(0,6)});
-  var cn=[];hc.forEach(function(m){Object.keys(m.companies).forEach(function(n){if(cn.indexOf(n)<0)cn.push(n)}});
+  var cn=[];hc.forEach(function(m){Object.keys(m.companies).forEach(function(n){if(cn.indexOf(n)<0)cn.push(n)})});
   var cs=['#1a6db5','#2e7d32','#e65100','#c62828','#00695c','#7b1fa2','#00838f','#ef6c00'];
   var s2=cn.slice(0,8).map(function(n,i){return{name:n.substring(0,10),type:'bar',itemStyle:{color:cs[i%8]},barGap:'8%',data:hc.slice(0,8).map(function(m){return m.companies[n]?m.companies[n].home:null})}});
   var c2=echarts.init(document.getElementById('c2'));
@@ -665,7 +665,7 @@ function initCharts(){
       xAxis:{type:'category',data:hg,name:(fm?fm.home:'主队')+'进球',nameTextStyle:{color:'#666',fontSize:10},axisLabel:{color:'#666',fontSize:mob?9:11}},
       yAxis:{type:'category',data:ag,name:(fm?fm.away:'客队')+'进球',nameTextStyle:{color:'#666',fontSize:10},axisLabel:{color:'#666',fontSize:mob?9:11}},
       visualMap:{min:0,max:15,orient:'horizontal',left:'center',bottom:0,inRange:{color:['#f5f5f5','#c8e6c9','#66bb6a','#2e7d32','#1b5e20']},textStyle:{color:'#666',fontSize:10}},
-      series:[{type:'heatmap',data:hd,label:{show:true,fontSize:mob?8:10,color:'#333',formatter:function(p){return p.value[2]>=1?p.value[2].toFixed(1):''}},emphasis:{itemStyle:{shadowBlur:8,shadowColor:'rgba(0,0,0,.2)'}}}}]});
+      series:[{type:'heatmap',data:hd,label:{show:true,fontSize:mob?8:10,color:'#333',formatter:function(p){return p.value[2]>=1?p.value[2].toFixed(1):''}},emphasis:{itemStyle:{shadowBlur:8,shadowColor:'rgba(0,0,0,.2)'}}}]});
   }else{
     document.getElementById('c5').innerHTML='<div style="text-align:center;padding:60px;color:#999">暂无足球赛事</div>';
   }
