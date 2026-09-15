@@ -1409,11 +1409,12 @@ TEAM_NAME_MAP = {
 
 # ========== Elo数据获取与先验计算 ==========
 def fetch_clubelo_rankings():
-    """从clubelo.com爬取Top 50球队的Elo评分（2000分制）"""
+    """从clubelo.com爬取Top 50球队的Elo评分（2000分制），失败时回退到本地缓存"""
+    # 1. 优先在线获取
     try:
         url = "https://clubelo.com/Rankings"
         req = Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=10) as resp:
             html = resp.read().decode('utf-8', errors='ignore')
 
         # 从Vega-Lite图表JSON中按位置配对提取Name和Elo
@@ -1430,14 +1431,35 @@ def fetch_clubelo_rankings():
             elo = float(elos[i])
             elo_dict[name] = elo
 
-        print(f"[Elo] 成功获取 {len(elo_dict)} 支球队的ClubElo评分")
         if elo_dict:
+            print(f"[Elo] 在线获取 {len(elo_dict)} 支球队的ClubElo评分")
             top5 = sorted(elo_dict.items(), key=lambda x: -x[1])[:5]
             print(f"[Elo] Top5: {', '.join(f'{n}({e:.0f})' for n, e in top5)}")
-        return elo_dict
+            # 更新本地缓存
+            try:
+                with open('elo_data.json', 'w', encoding='utf-8') as f:
+                    json.dump(elo_dict, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            return elo_dict
     except Exception as e:
-        print(f"[Elo] 获取ClubElo失败: {e}")
-        return {}
+        print(f"[Elo] 在线获取ClubElo失败: {e}")
+
+    # 2. 回退到本地缓存文件
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        local_path = os.path.join(script_dir, 'elo_data.json')
+        if os.path.exists(local_path):
+            with open(local_path, 'r', encoding='utf-8') as f:
+                elo_dict = json.load(f)
+            if elo_dict:
+                print(f"[Elo] 使用本地缓存 {len(elo_dict)} 支球队的ClubElo评分")
+                return elo_dict
+    except Exception as e:
+        print(f"[Elo] 读取本地缓存失败: {e}")
+
+    print("[Elo] 无可用Elo数据，将使用联赛平均先验")
+    return {}
 
 
 def get_team_elo(team_name, elo_data):
