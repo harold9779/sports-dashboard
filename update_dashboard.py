@@ -210,7 +210,7 @@ def generate_html(football_data, basketball_data, update_time):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>赛事赔率贝叶斯分析看板</title>
-<script src="https://image.uc.cn/s/uae/g/3n/mos-production/0915/echarts.min.js"><\/script>
+<script src="https://image.uc.cn/s/uae/g/3n/mos-production/0915/echarts.min.js"></script>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;background:#0f1923;color:#e0e6ed;min-height:100vh}}
@@ -482,7 +482,7 @@ var VALUE_BETS = {value_bets_js};
   }});
   window.addEventListener('resize',function(){{ch.resize()}});
 }})();
-<\/script>
+</script>
 </body>
 </html>'''
     return html
