@@ -107,6 +107,108 @@ def get_sport_priority(sport_key):
     """获取联赛优先级"""
     return SPORT_PRIORITY.get(sport_key, DEFAULT_PRIORITY)
 
+
+# ========== 联赛名称中英文映射 ==========
+LEAGUE_NAME_CN = {
+    # 英格兰
+    'EPL': '英超', 'Premier League': '英超',
+    'Championship': '英冠', 'EFL Championship': '英冠',
+    'England League One': '英甲', 'League One': '英甲',
+    'England League Two': '英乙', 'League Two': '英乙',
+    'FA Cup': '足总杯', 'EFL Cup': '联赛杯',
+    # 西班牙
+    'La Liga - Spain': '西甲', 'La Liga': '西甲', 'LaLiga': '西甲',
+    'Spain Segunda Division': '西乙', 'Segunda División': '西乙',
+    'Copa del Rey': '国王杯',
+    # 德国
+    'Bundesliga - Germany': '德甲', 'Bundesliga': '德甲',
+    'Germany 2. Bundesliga': '德乙', '2. Bundesliga': '德乙',
+    'DFB Pokal': '德国杯',
+    # 意大利
+    'Serie A - Italy': '意甲', 'Serie A': '意甲',
+    'Serie B - Italy': '意乙', 'Serie B': '意乙',
+    'Coppa Italia': '意大利杯',
+    # 法国
+    'Ligue 1 - France': '法甲', 'Ligue 1': '法甲',
+    'Ligue 2 - France': '法乙', 'Ligue 2': '法乙',
+    'Coupe de France': '法国杯',
+    # 荷兰
+    'Dutch Eredivisie': '荷甲', 'Eredivisie': '荷甲',
+    'Eerste Divisie': '荷乙',
+    # 葡萄牙
+    'Primeira Liga - Portugal': '葡超', 'Primeira Liga': '葡超', 'Portugal Primeira Liga': '葡超',
+    'Liga Portugal 2': '葡甲',
+    # 欧洲赛事
+    'UEFA Champions League': '欧冠', 'Champions League': '欧冠',
+    'UEFA Europa League': '欧联', 'Europa League': '欧联',
+    'UEFA Europa Conference League': '欧协联',
+    'UEFA Super Cup': '欧洲超级杯',
+    # 其他欧洲
+    'Russia Premier League': '俄超', 'Russian Premier League': '俄超',
+    'Turkey Super Lig': '土超', 'Süper Lig': '土超',
+    'Belgium First Div A': '比甲', 'Belgian Pro League': '比甲',
+    'Scotland Premiership': '苏超', 'Scottish Premiership': '苏超',
+    'Sweden Allsvenskan': '瑞典超', 'Allsvenskan': '瑞典超',
+    'Norway Eliteserien': '挪威超', 'Eliteserien': '挪威超',
+    'Denmark Superliga': '丹超', 'Danish Superliga': '丹超',
+    'Switzerland Super League': '瑞士超', 'Swiss Super League': '瑞士超',
+    'Austria Bundesliga': '奥甲', 'Austrian Bundesliga': '奥甲',
+    'Greece Super League': '希腊超', 'Super League Greece': '希腊超',
+    # 美洲
+    'USA MLS': '美职联', 'MLS': '美职联', 'Major League Soccer': '美职联',
+    'Mexico Liga MX': '墨超', 'Liga MX': '墨超',
+    'Brazil Campeonato Serie A': '巴甲', 'Brazil Serie A': '巴甲', 'Campeonato Brasileiro Série A': '巴甲',
+    'Argentina Primera Division': '阿甲', 'Argentine Primera División': '阿甲',
+    # 亚洲
+    'China Superleague': '中超', 'Chinese Super League': '中超', 'CSL': '中超',
+    'Japan J League': 'J联赛', 'J1 League': 'J1联赛', 'J.League': 'J联赛',
+    'South Korea K League': 'K联赛', 'K League 1': 'K1联赛', 'K League': 'K联赛',
+    'Australia A-League': '澳超', 'A-League': '澳超', 'A-League Men': '澳超',
+    'Saudi Pro League': '沙特联', 'Saudi Professional League': '沙特联',
+    'UAE Pro League': '阿联酋超',
+    'Qatar Stars League': '卡塔尔星联',
+    # 国际赛事
+    'World Cup': '世界杯', 'FIFA World Cup': '世界杯',
+    'Euro Qual': '欧洲杯预选赛', 'UEFA Euro Qualifying': '欧洲杯预选赛',
+    'European Championship': '欧洲杯', 'UEFA Euro': '欧洲杯',
+    'Copa America': '美洲杯', 'Copa América': '美洲杯',
+    'Africa Cup of Nations': '非洲杯',
+    'Asian Cup': '亚洲杯', 'AFC Asian Cup': '亚洲杯',
+    'Gold Cup': '金杯赛', 'CONCACAF Gold Cup': '金杯赛',
+    # 篮球
+    'NBA': 'NBA', 'National Basketball Association': 'NBA',
+    'Basketball Euroleague': '欧洲篮球联赛', 'EuroLeague': '欧洲篮球联赛', 'Turkish Airlines EuroLeague': '欧洲篮球联赛',
+    'NCAA Basketball': 'NCAA篮球', 'NCAAB': 'NCAA篮球', 'NCAA Men\'s Basketball': 'NCAA篮球',
+    'NBA G League': 'NBA发展联盟', 'NBA G League': 'NBA发展联盟',
+    'Spain ACB': '西班牙ACB联赛', 'Liga ACB': '西班牙ACB联赛',
+    'Turkey BSL': '土耳其BSL联赛', 'Basketbol Süper Ligi': '土耳其BSL联赛',
+    'Germany BBL': '德国BBL联赛', 'Basketball Bundesliga': '德国BBL联赛',
+    'France Pro A': '法国Pro A联赛', 'LNB Pro A': '法国Pro A联赛',
+    'Italy Serie A': '意大利篮球甲级联赛', 'Serie A (Italy)': '意大利篮球甲级联赛',
+    'Greece HEBA': '希腊HEBA联赛', 'Greek Basket League': '希腊篮球联赛',
+    'Australia NBL': '澳大利亚NBL', 'NBL': '澳大利亚NBL', 'National Basketball League (Australia)': '澳大利亚NBL',
+    'China CBA': 'CBA', 'CBA (China)': 'CBA', 'Chinese Basketball Association': 'CBA',
+    'EuroCup Basketball': '欧洲杯篮球联赛', 'EuroCup': '欧洲杯篮球联赛',
+    'FIBA Basketball World Cup': '男篮世界杯',
+}
+
+
+def translate_league_name(name):
+    """将联赛名称翻译成中文"""
+    if not name:
+        return name
+    # 精确匹配
+    if name in LEAGUE_NAME_CN:
+        return LEAGUE_NAME_CN[name]
+    # 模糊匹配（去除空格、大小写不敏感）
+    name_lower = name.lower().replace(' ', '').replace('-', '').replace('.', '')
+    for en, cn in LEAGUE_NAME_CN.items():
+        en_lower = en.lower().replace(' ', '').replace('-', '').replace('.', '')
+        if name_lower == en_lower or name_lower in en_lower or en_lower in name_lower:
+            return cn
+    # 未匹配则返回原名
+    return name
+
 # 贝叶斯先验强度 (相当于N场比赛的信息量)
 PRIOR_STRENGTH = 5.0
 
@@ -327,7 +429,8 @@ def bayesian_analysis(events, sport_type='football'):
             'away': away,
             'commence': commence,
             'sport': sport_type,
-            'league': sport_title,
+            'league': translate_league_name(sport_title),
+            'league_en': sport_title,
             'sport_key': sport_key,
             'odds': {
                 'home': round(med_home, 2),
