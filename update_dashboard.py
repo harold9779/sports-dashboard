@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-赛事赔率贝叶斯分析看板 - 自动更新脚本 v4 (全面修复版)
+赛事赔率贝叶斯分析看板 - 自动更新脚本 v5 (全球联赛版)
 修复内容:
   1. 真正的贝叶斯更新: 联赛先验 + 市场赔率似然 (Dirichlet-Multinomial)
   2. Edge = 后验概率 - 1/最高赔率 (有意义的价值指标, 不再恒为0)
@@ -9,6 +9,8 @@
   5. 篮球2路分支: 完全跳过平局计算, 不污染数据
   6. 时区: 前端用toLocaleString正确转换北京时间
   7. 赔率离散度: 多公司标准差作为贝叶斯置信度调整
+  8. 全球联赛: 动态获取所有足球篮球联赛, 按优先级排序抓取
+  9. 配额保护: 剩余请求不足时自动停止, 避免API限流
 """
 import json, math, os, sys
 from datetime import datetime, timezone
@@ -40,19 +42,88 @@ FOOTBALL_SPORTS = [
 ]
 BASKETBALL_SPORTS = ['basketball_nba', 'basketball_euroleague']
 
+# ========== 联赛优先级 (数字越小越优先) ==========
+SPORT_PRIORITY = {
+    # 足球 - 顶级联赛
+    'soccer_epl': 1, 'soccer_spain_la_liga': 1, 'soccer_germany_bundesliga': 1,
+    'soccer_italy_serie_a': 1, 'soccer_france_ligue_one': 1,
+    'soccer_uefa_champs_league': 1, 'soccer_uefa_europa_league': 2,
+    # 足球 - 次级联赛
+    'soccer_efl_champ': 3, 'soccer_england_league_one': 4, 'soccer_england_league_two': 5,
+    'soccer_spain_segunda_division': 3, 'soccer_germany_2_bundesliga': 3,
+    'soccer_italy_serie_b': 3, 'soccer_france_ligue_two': 3,
+    # 足球 - 其他欧洲联赛
+    'soccer_netherlands_eredivisie': 3, 'soccer_portugal_primeira_liga': 3,
+    'soccer_russia_premier_league': 4, 'soccer_turkey_super_lig': 4,
+    'soccer_belgium_first_div': 4, 'soccer_scotland_premiership': 4,
+    'soccer_sweden_allsvenskan': 5, 'soccer_norway_eliteserien': 5,
+    'soccer_denmark_superliga': 5, 'soccer_switzerland_superleague': 5,
+    'soccer_austria_bundesliga': 5, 'soccer_greece_super_league': 5,
+    # 足球 - 美洲
+    'soccer_usa_mls': 3, 'soccer_mexico_liga_mx': 3,
+    'soccer_brazil_campeonato_serie_a': 3, 'soccer_argentina_primera_division': 4,
+    # 足球 - 亚洲
+    'soccer_china_superleague': 4, 'soccer_japan_j_league': 4,
+    'soccer_south_korea_k_league': 5, 'soccer_australia_aleague': 5,
+    # 足球 - 国际赛
+    'soccer_world_cup': 1, 'soccer_euro_qual': 2,
+    # 篮球
+    'basketball_nba': 1, 'basketball_euroleague': 2,
+    'basketball_ncaab': 3, 'basketball_nbagleague': 4,
+    'basketball_spain_acb': 3, 'basketball_turkey_bsl': 4,
+    'basketball_germany_bbl': 4, 'basketball_france_leguide': 4,
+    'basketball_italy_seriea': 4, 'basketball_greece_heba': 4,
+    'basketball_australia_nbl': 5, 'basketball_china_cba': 4,
+}
+DEFAULT_PRIORITY = 10  # 未知联赛默认优先级
+
+# 配额保护
+MIN_REQUESTS_REMAINING = 20  # 剩余请求低于此值时停止抓取
+MAX_FOOTBALL_MATCHES = 150   # 足球最多抓取场次
+MAX_BASKETBALL_MATCHES = 50  # 篮球最多抓取场次
+
+# 全局剩余请求数
+requests_remaining = 999
+
+
+def fetch_all_sports():
+    """获取The Odds API支持的所有活跃联赛"""
+    global requests_remaining
+    url = f'https://api.the-odds-api.com/v4/sports/?apiKey={API_KEY}'
+    try:
+        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urlopen(req, timeout=15) as resp:
+            requests_remaining = int(resp.headers.get('x-requests-remaining', '999'))
+            data = json.loads(resp.read().decode())
+            active = [s for s in data if s.get('active', True)]
+            print(f'获取到 {len(data)} 个联赛, 其中活跃 {len(active)} 个 (剩余请求: {requests_remaining})')
+            return active
+    except Exception as e:
+        print(f'获取联赛列表失败: {e}')
+        return []
+
+
+def get_sport_priority(sport_key):
+    """获取联赛优先级"""
+    return SPORT_PRIORITY.get(sport_key, DEFAULT_PRIORITY)
+
 # 贝叶斯先验强度 (相当于N场比赛的信息量)
 PRIOR_STRENGTH = 5.0
 
 
 def fetch_odds(sport_key, regions='eu,uk,us', markets='h2h', odds_format='decimal'):
+    global requests_remaining
+    if requests_remaining < MIN_REQUESTS_REMAINING:
+        print(f'  {sport_key}: SKIP (剩余请求不足: {requests_remaining})')
+        return []
     params = urlencode({'apiKey': API_KEY, 'regions': regions, 'markets': markets, 'oddsFormat': odds_format})
     url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?{params}'
     try:
         req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urlopen(req, timeout=20) as resp:
-            remaining = resp.headers.get('x-requests-remaining', '?')
+            requests_remaining = int(resp.headers.get('x-requests-remaining', requests_remaining))
             data = json.loads(resp.read().decode())
-            print(f'  {sport_key}: {len(data)} events (remaining: {remaining})')
+            print(f'  {sport_key}: {len(data)} events (remaining: {requests_remaining})')
             return data
     except Exception as e:
         print(f'  {sport_key}: ERROR - {e}')
@@ -698,30 +769,62 @@ def generate_html(data):
 
 
 def main():
+    global requests_remaining
     if not API_KEY:
         print('ERROR: ODDS_API_KEY not set')
         sys.exit(1)
 
     now = datetime.now(timezone.utc)
     update_time = now.strftime('%Y-%m-%d %H:%M UTC')
-    print(f'=== 赛事赔率贝叶斯分析看板更新 v4 ===')
+    print(f'=== 赛事赔率贝叶斯分析看板更新 v5 (全球联赛版) ===')
     print(f'时间: {update_time}')
 
-    print('\n--- 足球赛事 ---')
-    football_events = []
-    for sport in FOOTBALL_SPORTS:
-        events = fetch_odds(sport)
-        football_events.extend(events)
-        if len(football_events) >= 20:
-            break
+    # 动态获取所有活跃联赛
+    print('\n--- 获取全球联赛列表 ---')
+    all_sports = fetch_all_sports()
+    if not all_sports:
+        print('WARNING: 无法获取联赛列表, 使用默认联赛')
+        all_sports = [{'key': k, 'title': k, 'active': True} for k in FOOTBALL_SPORTS + BASKETBALL_SPORTS]
 
-    print('\n--- 篮球赛事 ---')
-    basketball_events = []
-    for sport in BASKETBALL_SPORTS:
-        events = fetch_odds(sport)
-        basketball_events.extend(events)
-        if len(basketball_events) >= 12:
+    # 筛选足球和篮球联赛, 按优先级排序
+    football_leagues = sorted(
+        [s for s in all_sports if s['key'].startswith('soccer_')],
+        key=lambda s: get_sport_priority(s['key'])
+    )
+    basketball_leagues = sorted(
+        [s for s in all_sports if s['key'].startswith('basketball_')],
+        key=lambda s: get_sport_priority(s['key'])
+    )
+    print(f'足球联赛: {len(football_leagues)} 个')
+    print(f'篮球联赛: {len(basketball_leagues)} 个')
+    print(f'足球前10: {[s["key"] for s in football_leagues[:10]]}')
+    print(f'篮球前5: {[s["key"] for s in basketball_leagues[:5]]}')
+
+    print('\n--- 足球赛事 (全球) ---')
+    football_events = []
+    for sport in football_leagues:
+        if len(football_events) >= MAX_FOOTBALL_MATCHES:
+            print(f'  已达到足球上限 {MAX_FOOTBALL_MATCHES} 场, 停止抓取')
             break
+        if requests_remaining < MIN_REQUESTS_REMAINING:
+            print(f'  剩余请求不足 ({requests_remaining}), 停止抓取')
+            break
+        events = fetch_odds(sport['key'])
+        football_events.extend(events)
+
+    print('\n--- 篮球赛事 (全球) ---')
+    basketball_events = []
+    for sport in basketball_leagues:
+        if len(basketball_events) >= MAX_BASKETBALL_MATCHES:
+            print(f'  已达到篮球上限 {MAX_BASKETBALL_MATCHES} 场, 停止抓取')
+            break
+        if requests_remaining < MIN_REQUESTS_REMAINING:
+            print(f'  剩余请求不足 ({requests_remaining}), 停止抓取')
+            break
+        events = fetch_odds(sport['key'])
+        basketball_events.extend(events)
+
+    print(f'\n抓取汇总: 足球 {len(football_events)} 场 / 篮球 {len(basketball_events)} 场 / 剩余请求 {requests_remaining}')
 
     print('\n--- 贝叶斯分析 (v4: 联赛先验 + 市场似然) ---')
     football_data = bayesian_analysis(football_events, 'football')
