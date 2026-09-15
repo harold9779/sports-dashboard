@@ -234,7 +234,7 @@ def translate_league_name(name):
 PRIOR_STRENGTH = 5.0
 
 
-def fetch_odds(sport_key, regions='eu,uk,us', markets='h2h', odds_format='decimal'):
+def fetch_odds(sport_key, regions='eu,uk,us', markets='h2h,totals,spreads', odds_format='decimal'):
     global requests_remaining
     if requests_remaining < MIN_REQUESTS_REMAINING:
         print(f'  {sport_key}: SKIP (剩余请求不足: {requests_remaining})')
@@ -1651,12 +1651,14 @@ def bayesian_analysis(events, sport_type='football', elo_data=None, injury_data=
         if not bookmakers:
             continue
 
-        # 收集各公司赔率
+        # 收集各公司赔率 (h2h胜平负 + totals进球数大小球)
         odds_by_company = {}
+        totals_by_company = {}  # {公司名: {point: {over: odds, under: odds}}}
         for bk in bookmakers:
             bk_name = bk.get('title', bk.get('key', ''))
             for market in bk.get('markets', []):
-                if market.get('key') == 'h2h':
+                mkey = market.get('key')
+                if mkey == 'h2h':
                     outcomes = {o['name']: o['price'] for o in market.get('outcomes', [])}
                     h = outcomes.get(home, 0)
                     a = outcomes.get(away, 0)
@@ -1665,7 +1667,25 @@ def bayesian_analysis(events, sport_type='football', elo_data=None, injury_data=
                         if not is_basketball and d <= 1.0:
                             continue
                         odds_by_company[bk_name] = {'home': h, 'draw': d, 'away': a}
-                    break
+                elif mkey == 'totals' and not is_basketball:
+                    # 进球数大小球: outcomes包含Over/Under, point是盘口(如2.5)
+                    outcomes = market.get('outcomes', [])
+                    if len(outcomes) >= 2:
+                        point = outcomes[0].get('point', 2.5)
+                        over_odds = 0
+                        under_odds = 0
+                        for o in outcomes:
+                            oname = o.get('name', '').lower()
+                            if 'over' in oname:
+                                over_odds = o.get('price', 0)
+                            elif 'under' in oname:
+                                under_odds = o.get('price', 0)
+                        if over_odds > 1.0 and under_odds > 1.0:
+                            totals_by_company[bk_name] = {
+                                'point': point,
+                                'over': over_odds,
+                                'under': under_odds
+                            }
 
         if len(odds_by_company) < 2:
             continue
@@ -1699,10 +1719,113 @@ def bayesian_analysis(events, sport_type='football', elo_data=None, injury_data=
         std_away = std_dev(all_away)
         avg_std = (std_home + std_away) / 2
 
-        # 获取球队Elo并应用伤病调整
+        # 获取球队Elo
         home_elo = get_team_elo(home, elo_data) if elo_data else None
         away_elo = get_team_elo(away, elo_data) if elo_data else None
-        home_elo, away_elo = apply_injury_adjustment(home_elo, away_elo, home, away, injury_data)
+
+        # ===== 进球数大小球 (Totals) 分析 =====
+        totals_data = None
+        if not is_basketball and totals_by_company:
+            # 取最常见的盘口
+            from collections import Counter
+            point_counts = Counter(t['point'] for t in totals_by_company.values())
+            main_point = point_counts.most_common(1)[0][0] if point_counts else 2.5
+
+            # 收集该盘口下的所有赔率
+            over_odds_list = []
+            under_odds_list = []
+            for t in totals_by_company.values():
+                if abs(t['point'] - main_point) < 0.01:
+                    over_odds_list.append(t['over'])
+                    under_odds_list.append(t['under'])
+
+            if over_odds_list and under_odds_list:
+                med_over = median(over_odds_list)
+                med_under = median(under_odds_list)
+                best_over = max(over_odds_list)
+                best_under = max(under_odds_list)
+
+                # 去水概率
+                inv_over = 1.0 / med_over
+                inv_under = 1.0 / med_under
+                total_inv = inv_over + inv_under
+                p_over = inv_over / total_inv
+                p_under = inv_under / total_inv
+
+                totals_data = {
+                    'point': main_point,
+                    'med_over': round(med_over, 2),
+                    'med_under': round(med_under, 2),
+                    'best_over': round(best_over, 2),
+                    'best_under': round(best_under, 2),
+                    'p_over': round(p_over, 4),
+                    'p_under': round(p_under, 4),
+                    'num_companies': len(over_odds_list),
+                    'companies': {
+                        n: {'over': round(t['over'], 2), 'under': round(t['under'], 2), 'point': t['point']}
+                        for n, t in list(totals_by_company.items())[:8]
+                    }
+                }
+
+        # ===== 角球数量预估模型 =====
+        corner_prediction = None
+        if not is_basketball:
+            # 联赛平均角球数 (基于联赛特性)
+            league_corner_avg = {
+                'soccer_epl': 10.5, 'soccer_spain_la_liga': 10.0,
+                'soccer_germany_bundesliga': 11.0, 'soccer_italy_serie_a': 9.5,
+                'soccer_france_ligue_one': 10.0, 'soccer_uefa_champs_league': 10.5,
+                'soccer_uefa_europa_league': 10.0, 'soccer_netherlands_eredivisie': 10.5,
+                'soccer_portugal_primeira_liga': 10.0, 'soccer_usa_mls': 10.5,
+                'soccer_brazil_campeonato_serie_a': 11.0, 'soccer_mexico_liga_mx': 10.0,
+            }.get(sport_key, 10.0)
+
+            # 基于Elo差值和进攻强度调整角球预估
+            # 强队进攻角球更多，比赛开放程度影响角球总数
+            corner_base = league_corner_avg
+
+            if home_elo is not None and away_elo is not None:
+                elo_diff = abs(home_elo - away_elo)
+                # 实力差距大的比赛角球更多（强队围攻）
+                corner_base += min(elo_diff / 200.0, 1.5)
+                # 双方Elo都高的比赛更开放，角球略多
+                avg_elo = (home_elo + away_elo) / 2
+                if avg_elo > 1900:
+                    corner_base += 0.5
+                elif avg_elo < 1700:
+                    corner_base -= 0.5
+
+            # 泊松lambda用于角球分布
+            corner_lambda = max(6.0, min(16.0, corner_base))
+
+            # 计算角球大小球概率 (盘口9.5)
+            corner_line = 9.5
+            p_corner_over = 0.0
+            p_corner_under = 0.0
+            for k in range(30):
+                pk = math.exp(-corner_lambda) * (corner_lambda ** k) / math.factorial(k)
+                if k > corner_line:
+                    p_corner_over += pk
+                else:
+                    p_corner_under += pk
+
+            # 最可能角球数
+            most_likely_corners = int(corner_lambda)
+            corner_prob_at_mode = math.exp(-corner_lambda) * (corner_lambda ** most_likely_corners) / math.factorial(most_likely_corners)
+
+            corner_prediction = {
+                'expected': round(corner_lambda, 1),
+                'most_likely': most_likely_corners,
+                'most_likely_prob': round(corner_prob_at_mode, 4),
+                'line': corner_line,
+                'p_over': round(p_corner_over, 4),
+                'p_under': round(p_corner_under, 4),
+                'league_avg': league_corner_avg,
+                'distribution': [
+                    {'corners': k, 'prob': round(math.exp(-corner_lambda) * (corner_lambda ** k) / math.factorial(k), 4)}
+                    for k in range(0, 16)
+                ]
+            }
 
         # 联赛先验（作为Elo不可用时的回退）
         prior_data = LEAGUE_PRIORS.get(sport_key, DEFAULT_BASKETBALL_PRIOR if is_basketball else DEFAULT_FOOTBALL_PRIOR)
@@ -1863,6 +1986,8 @@ def bayesian_analysis(events, sport_type='football', elo_data=None, injury_data=
                 'avg_std': round(avg_std, 4),
                 'num_companies': len(odds_by_company),
             },
+            'totals': totals_data,
+            'corners': corner_prediction,
             'status': 'upcoming',
             'confidence': 'high' if avg_std < 0.05 else 'medium' if avg_std < 0.1 else 'low',
         }
@@ -1948,6 +2073,47 @@ a{color:#333;text-decoration:none}a:hover{color:#e62129}
   #tools{font-size:11px}
   .vlist{flex-direction:column}
 }
+/* ===== 比赛详情弹窗 ===== */
+.modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;display:none;justify-content:center;align-items:flex-start;overflow-y:auto;padding:20px}
+.modal-overlay.show{display:flex}
+.modal{background:#fff;border-radius:6px;max-width:900px;width:100%;margin-top:20px;box-shadow:0 10px 40px rgba(0,0,0,0.3)}
+.modal-header{background:linear-gradient(135deg,#004b81,#0066aa);color:#fff;padding:16px 20px;border-radius:6px 6px 0 0;display:flex;justify-content:space-between;align-items:center}
+.modal-header h3{font-size:16px;margin:0}
+.modal-header .league-tag{background:rgba(255,255,255,0.2);padding:2px 8px;border-radius:3px;font-size:11px;margin-left:8px}
+.modal-close{background:none;border:none;color:#fff;font-size:22px;cursor:pointer;padding:0 6px;line-height:1}
+.modal-close:hover{color:#ffcc00}
+.modal-body{padding:20px}
+.modal-section{margin-bottom:20px}
+.modal-section h4{font-size:13px;color:#004b81;border-bottom:2px solid #004b81;padding-bottom:4px;margin-bottom:10px}
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.detail-card{background:#f8f9fa;border:1px solid #e9ecef;border-radius:4px;padding:12px}
+.detail-card .label{font-size:11px;color:#666;margin-bottom:4px}
+.detail-card .value{font-size:18px;font-weight:bold;color:#333}
+.detail-card .value.green{color:#28a745}
+.detail-card .value.red{color:#dc3545}
+.detail-card .value.orange{color:#fd7e14}
+.odds-table{width:100%;border-collapse:collapse;font-size:12px}
+.odds-table th{background:#004b81;color:#fff;padding:6px 8px;text-align:left;font-weight:normal}
+.odds-table td{padding:6px 8px;border-bottom:1px solid #eee}
+.odds-table tr:hover{background:#f5f5f5}
+.odds-table .best{color:#28a745;font-weight:bold}
+.prob-bar{height:20px;background:#e9ecef;border-radius:3px;overflow:hidden;display:flex;margin:4px 0}
+.prob-bar .h{background:#004b81}
+.prob-bar .d{background:#6c757d}
+.prob-bar .a{background:#dc3545}
+.prob-bar span{display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;min-width:30px}
+.corner-dist{display:flex;align-items:flex-end;gap:2px;height:80px;padding:8px 0}
+.corner-bar{flex:1;background:linear-gradient(180deg,#17a2b8,#007bff);border-radius:2px 2px 0 0;position:relative;min-width:8px}
+.corner-bar .cval{position:absolute;top:-16px;left:50%;transform:translateX(-50%);font-size:9px;color:#666}
+.corner-bar .clabel{position:absolute;bottom:-16px;left:50%;transform:translateX(-50%);font-size:9px;color:#999}
+.poisson-matrix{display:grid;grid-template-columns:repeat(6,1fr);gap:2px;font-size:11px}
+.poisson-cell{background:#f8f9fa;padding:6px;text-align:center;border-radius:2px}
+.poisson-cell.highlight{background:#fff3cd;font-weight:bold}
+.match-teams{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #eee;margin-bottom:12px}
+.match-team{text-align:center;flex:1}
+.match-team .name{font-size:15px;font-weight:bold;color:#333}
+.match-team .elo{font-size:11px;color:#666;margin-top:2px}
+.match-vs{font-size:20px;color:#999;padding:0 16px}
 </style>
 </head>
 <body>
@@ -2115,6 +2281,10 @@ function renderTable(data){
     var od=bb?'<span style="color:#ccc">—</span>':'<span class="od'+(m.odds.draw===m.odds.best_draw?' best':'')+'">'+m.odds.draw.toFixed(2)+'</span>';
 
     var tr=document.createElement('tr');
+    tr.style.cursor='pointer';
+    tr.onmouseover=function(){this.style.background='#e8f4fc'};
+    tr.onmouseout=function(){this.style.background=''};
+    tr.onclick=function(){showMatchDetail(m)};
     tr.innerHTML='<td><span class="lg '+lg+'">'+lt+'</span></td>'
       +'<td style="font-family:Tahoma;font-size:11px;color:#666">'+ts+'</td>'
       +'<td class="tn th">'+m.home+'</td><td class="vs">vs</td><td class="tn ta">'+m.away+'</td>'
@@ -2151,6 +2321,137 @@ function showVal(){
 function hlBtn(i){var bs=document.querySelectorAll('#tools .btn');bs.forEach(function(b,j){b.className=j===i?'btn on':'btn'})}
 
 renderTable(MD);renderVB();
+
+// ===== 比赛详情弹窗 =====
+function closeModal(){document.getElementById('matchModal').classList.remove('show')}
+function showMatchDetail(m){
+  var bb=m.sport==='basketball';
+  document.getElementById('modalTitle').textContent=m.home+' vs '+m.away;
+  document.getElementById('modalLeague').textContent=m.league||m.league_en||'';
+  document.getElementById('modalTime').textContent='开赛: '+toBJT(m.commence);
+
+  var html='';
+  // 球队信息 + Elo
+  html+='<div class="match-teams">';
+  html+='<div class="match-team"><div class="name">'+m.home+'</div>';
+  if(m.elo&&m.elo.home)html+='<div class="elo">Elo: '+m.elo.home+'</div>';
+  html+='</div>';
+  html+='<div class="match-vs">VS</div>';
+  html+='<div class="match-team"><div class="name">'+m.away+'</div>';
+  if(m.elo&&m.elo.away)html+='<div class="elo">Elo: '+m.elo.away+'</div>';
+  html+='</div></div>';
+
+  // 贝叶斯后验概率
+  html+='<div class="modal-section"><h4>贝叶斯后验概率</h4>';
+  var bw=300,wh=Math.round(m.bayes.home*bw),wd=bb?0:Math.round(m.bayes.draw*bw),wa=bw-wh-wd;
+  html+='<div class="prob-bar" style="width:'+bw+'px">';
+  html+='<span class="h" style="width:'+wh+'px">主'+(m.bayes.home*100).toFixed(1)+'%</span>';
+  if(!bb)html+='<span class="d" style="width:'+wd+'px">平'+(m.bayes.draw*100).toFixed(1)+'%</span>';
+  html+='<span class="a" style="width:'+wa+'px">客'+(m.bayes.away*100).toFixed(1)+'%</span>';
+  html+='</div>';
+  if(m.elo&&m.elo.used)html+='<div style="font-size:11px;color:#28a745;margin-top:4px">✓ Elo先验已生效</div>';
+  html+='</div>';
+
+  // 胜平负指数 - 各公司对比
+  html+='<div class="modal-section"><h4>胜平负指数（各博彩公司）</h4>';
+  html+='<table class="odds-table"><thead><tr><th>博彩公司</th><th>主胜</th><th>'+(bb?'':'平局')+'</th><th>客胜</th></tr></thead><tbody>';
+  var comps=m.companies||{};
+  Object.keys(comps).forEach(function(cn){
+    var o=comps[cn];
+    html+='<tr><td>'+cn+'</td>';
+    html+='<td class="'+(o.home===m.odds.best_home?'best':'')+'">'+o.home.toFixed(2)+'</td>';
+    if(!bb)html+='<td class="'+(o.draw===m.odds.best_draw?'best':'')+'">'+(o.draw>0?o.draw.toFixed(2):'—')+'</td>';
+    html+='<td class="'+(o.away===m.odds.best_away?'best':'')+'">'+o.away.toFixed(2)+'</td></tr>';
+  });
+  html+='</tbody></table>';
+  html+='<div style="font-size:11px;color:#666;margin-top:6px">中位数: 主'+m.odds.home.toFixed(2)+' '+(bb?'':'平'+m.odds.draw.toFixed(2)+' ')+'客'+m.odds.away.toFixed(2)+' | 最高赔率已标绿</div>';
+  html+='</div>';
+
+  // 进球数大小球指数
+  if(!bb&&m.totals){
+    var t=m.totals;
+    html+='<div class="modal-section"><h4>进球数大小球指数</h4>';
+    html+='<div class="detail-grid">';
+    html+='<div class="detail-card"><div class="label">盘口</div><div class="value">'+t.point+'球</div></div>';
+    html+='<div class="detail-card"><div class="label">大球赔率</div><div class="value green">'+t.med_over.toFixed(2)+'</div></div>';
+    html+='<div class="detail-card"><div class="label">小球赔率</div><div class="value red">'+t.med_under.toFixed(2)+'</div></div>';
+    html+='<div class="detail-card"><div class="label">大球概率(去水)</div><div class="value '+(t.p_over>0.5?'green':'red')+'">'+(t.p_over*100).toFixed(1)+'%</div></div>';
+    html+='</div>';
+    if(t.companies&&Object.keys(t.companies).length>0){
+      html+='<table class="odds-table" style="margin-top:10px"><thead><tr><th>博彩公司</th><th>盘口</th><th>大球</th><th>小球</th></tr></thead><tbody>';
+      Object.keys(t.companies).forEach(function(cn){
+        var c=t.companies[cn];
+        html+='<tr><td>'+cn+'</td><td>'+c.point+'</td><td>'+c.over.toFixed(2)+'</td><td>'+c.under.toFixed(2)+'</td></tr>';
+      });
+      html+='</tbody></table>';
+    }
+    html+='</div>';
+  }
+
+  // 角球数量预估
+  if(!bb&&m.corners){
+    var c=m.corners;
+    html+='<div class="modal-section"><h4>角球数量预估</h4>';
+    html+='<div class="detail-grid">';
+    html+='<div class="detail-card"><div class="label">预期角球数</div><div class="value orange">'+c.expected+'个</div></div>';
+    html+='<div class="detail-card"><div class="label">最可能角球数</div><div class="value">'+c.most_likely+'个 ('+(c.most_likely_prob*100).toFixed(1)+'%)</div></div>';
+    html+='<div class="detail-card"><div class="label">大9.5角概率</div><div class="value '+(c.p_over>0.5?'green':'red')+'">'+(c.p_over*100).toFixed(1)+'%</div></div>';
+    html+='<div class="detail-card"><div class="label">联赛平均</div><div class="value">'+c.league_avg+'个</div></div>';
+    html+='</div>';
+    // 角球分布柱状图
+    html+='<div style="margin-top:16px;padding:0 20px"><div class="corner-dist">';
+    c.distribution.forEach(function(d){
+      var h=Math.max(2,d.prob*300);
+      html+='<div class="corner-bar" style="height:'+h+'px" title="'+d.corners+'个: '+(d.prob*100).toFixed(1)+'%">';
+      if(d.prob>0.05)html+='<span class="cval">'+(d.prob*100).toFixed(0)+'%</span>';
+      html+='<span class="clabel">'+d.corners+'</span></div>';
+    });
+    html+='</div><div style="text-align:center;font-size:11px;color:#999;margin-top:20px">角球数量分布（泊松模型，λ='+c.expected+'）</div></div>';
+    html+='</div>';
+  }
+
+  // 泊松比分预测
+  if(!bb&&m.poisson&&m.poisson.matrix){
+    html+='<div class="modal-section"><h4>泊松比分预测矩阵</h4>';
+    html+='<div style="font-size:11px;color:#666;margin-bottom:8px">最可能比分: <b>'+m.poisson.score+'</b> ('+(m.poisson.prob*100).toFixed(1)+'%) | 行=主队进球, 列=客队进球</div>';
+    html+='<div class="poisson-matrix">';
+    html+='<div class="poisson-cell" style="background:#004b81;color:#fff">主\\客</div>';
+    for(var j=0;j<5;j++)html+='<div class="poisson-cell" style="background:#004b81;color:#fff">'+j+'</div>';
+    for(var i=0;i<5;i++){
+      html+='<div class="poisson-cell" style="background:#004b81;color:#fff">'+i+'</div>';
+      for(var j=0;j<5;j++){
+        var cell=m.poisson.matrix.find(function(s){return s.home===i&&s.away===j});
+        var prob=cell?cell.prob:0;
+        var hl=cell&&(cell.home+'-'+cell.away)===m.poisson.score?'highlight':'';
+        html+='<div class="poisson-cell '+hl+'" title="'+i+'-'+j+': '+(prob*100).toFixed(2)+'%">'+(prob*100).toFixed(1)+'%</div>';
+      }
+    }
+    html+='</div></div>';
+  }
+
+  // 凯利指数与Edge
+  html+='<div class="modal-section"><h4>凯利指数与价值评估</h4>';
+  html+='<div class="detail-grid">';
+  html+='<div class="detail-card"><div class="label">主胜Edge</div><div class="value '+(m.edge.home>2?'green':m.edge.home>0?'orange':'red')+'">'+(m.edge.home>0?'+':'')+m.edge.home.toFixed(2)+'%</div></div>';
+  if(!bb)html+='<div class="detail-card"><div class="label">平局Edge</div><div class="value '+(m.edge.draw>2?'green':m.edge.draw>0?'orange':'red')+'">'+(m.edge.draw>0?'+':'')+m.edge.draw.toFixed(2)+'%</div></div>';
+  html+='<div class="detail-card"><div class="label">客胜Edge</div><div class="value '+(m.edge.away>2?'green':m.edge.away>0?'orange':'red')+'">'+(m.edge.away>0?'+':'')+m.edge.away.toFixed(2)+'%</div></div>';
+  html+='<div class="detail-card"><div class="label">主胜凯利</div><div class="value">'+m.kelly.home.toFixed(3)+'</div></div>';
+  if(!bb)html+='<div class="detail-card"><div class="label">平局凯利</div><div class="value">'+m.kelly.draw.toFixed(3)+'</div></div>';
+  html+='<div class="detail-card"><div class="label">客胜凯利</div><div class="value">'+m.kelly.away.toFixed(3)+'</div></div>';
+  html+='</div>';
+  var maxEdge=Math.max(m.edge.home,m.edge.away,bb?-99:m.edge.draw);
+  if(maxEdge>2){
+    html+='<div style="margin-top:10px;padding:8px;background:#d4edda;border-radius:4px;color:#155724;font-size:12px">✓ 发现价值投注机会！最大Edge +'+maxEdge.toFixed(2)+'%，建议关注。</div>';
+  }else if(maxEdge>0){
+    html+='<div style="margin-top:10px;padding:8px;background:#fff3cd;border-radius:4px;color:#856404;font-size:12px">⚠ 存在轻微正EV（+'+maxEdge.toFixed(2)+'%），但未达2%阈值，需谨慎。</div>';
+  }else{
+    html+='<div style="margin-top:10px;padding:8px;background:#f8d7da;border-radius:4px;color:#721c24;font-size:12px">✗ 当前无价值投注机会，市场定价较为有效。</div>';
+  }
+  html+='</div>';
+
+  document.getElementById('modalBody').innerHTML=html;
+  document.getElementById('matchModal').classList.add('show');
+}
 
 function initCharts(){
   if(typeof echarts==='undefined'){setTimeout(initCharts,300);return}
@@ -2242,6 +2543,24 @@ function initCharts(){
 }
 initCharts();
 </script>
+
+<!-- 比赛详情弹窗 -->
+<div class="modal-overlay" id="matchModal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <h3 id="modalTitle">比赛详情</h3>
+        <span class="league-tag" id="modalLeague"></span>
+        <span style="font-size:11px;opacity:0.8;margin-left:8px" id="modalTime"></span>
+      </div>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody">
+      <!-- 动态内容 -->
+    </div>
+  </div>
+</div>
+
 </body>
 </html>'''
 
@@ -2267,9 +2586,6 @@ def main():
     # 获取ClubElo足球球队评分
     print('\n--- 获取球队Elo数据 ---')
     football_elo_data = fetch_clubelo_rankings()
-    injury_data = fetch_injury_data()
-    if injury_data:
-        print(f'[伤病] 获取到 {len(injury_data)} 支球队的伤病信息')
 
     # 动态获取所有活跃联赛
     print('\n--- 获取全球联赛列表 ---')
@@ -2322,8 +2638,8 @@ def main():
     basketball_elo_data = estimate_basketball_elo_from_odds(basketball_events)
 
     print('\n--- 贝叶斯分析 (v7: Elo先验 + 市场似然 + 泊松Elo调整) ---')
-    football_data = bayesian_analysis(football_events, 'football', elo_data=football_elo_data, injury_data=injury_data)
-    basketball_data = bayesian_analysis(basketball_events, 'basketball', elo_data=basketball_elo_data, injury_data=injury_data)
+    football_data = bayesian_analysis(football_events, 'football', elo_data=football_elo_data)
+    basketball_data = bayesian_analysis(basketball_events, 'basketball', elo_data=basketball_elo_data)
     print(f'足球: {len(football_data)} 场分析完成')
     # 统计Elo使用率
     if football_data:
