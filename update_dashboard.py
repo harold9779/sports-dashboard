@@ -2369,7 +2369,11 @@ def bayesian_analysis(events, sport_type='football', elo_data=None, injury_data=
 
         best_score = poisson_scores[0] if poisson_scores else {'home': 0, 'away': 0, 'prob': 0}
         top5 = poisson_scores[:5]
-        matrix = poisson_scores[:36]
+        # 比分矩阵输出完整 6×6 网格（主0-5 × 客0-5），供前端热力图/详情矩阵使用
+        if not is_basketball and poisson_scores:
+            matrix = [{'home': h, 'away': a, 'prob': grid[h][a]} for h in range(6) for a in range(6)]
+        else:
+            matrix = poisson_scores[:36]
 
         result = {
             'match': f'{home} vs {away}',
@@ -2607,11 +2611,11 @@ a{color:#333;text-decoration:none}a:hover{color:#e62129}
   <div class="sec-hdr">📈 数据分析图表</div>
   <div class="chsec"><div class="chrow">
     <div class="chbox"><div class="cl"><span class="dot" style="background:#1a6db5"></span>贝叶斯后验 vs 市场概率</div><div id="c1" class="cc"></div></div>
-    <div class="chbox"><div class="cl"><span class="dot" style="background:#e65100"></span>多公司赔率离散度</div><div id="c2" class="cc"></div></div>
+    <div class="chbox"><div class="cl"><span class="dot" style="background:#e65100"></span><span id="c2title">多公司赔率离散度</span></div><div id="c2" class="cc"></div></div>
   </div></div>
   <div class="chsec"><div class="chrow">
     <div class="chbox"><div class="cl"><span class="dot" style="background:#2e7d32"></span>Edge 价值优势排序</div><div id="c3" class="cc"></div></div>
-    <div class="chbox"><div class="cl"><span class="dot" style="background:#7b1fa2"></span>凯利f* 仓位建议</div><div id="c4" class="cc"></div></div>
+    <div class="chbox"><div class="cl"><span class="dot" style="background:#7b1fa2"></span><span id="c4title">凯利f* 仓位建议</span></div><div id="c4" class="cc"></div></div>
   </div></div>
   <div class="chsec"><div class="chrow">
     <div class="chbox"><div class="cl"><span class="dot" style="background:#00695c"></span>泊松比分热力图</div><div id="c5" class="cc"></div></div>
@@ -2955,16 +2959,32 @@ function initCharts(){
       {name:'后验-客胜',type:'bar',itemStyle:{color:'#c62828'},data:data.map(function(m){return m.bayes.away})}
     ]});
 
-  var hc=data.filter(function(m){return m.companies&&Object.keys(m.companies).length>1});
-  var cl2=hc.slice(0,8).map(function(m){return m.home.substring(0,6)});
-  var cn=[];hc.forEach(function(m){Object.keys(m.companies).forEach(function(n){if(cn.indexOf(n)<0)cn.push(n)})});
-  var cs=['#1a6db5','#2e7d32','#e65100','#c62828','#00695c','#7b1fa2','#00838f','#ef6c00'];
-  var s2=cn.slice(0,8).map(function(n,i){return{name:n.substring(0,10),type:'bar',itemStyle:{color:cs[i%8]},barGap:'8%',data:hc.slice(0,8).map(function(m){return m.companies[n]?m.companies[n].home:null})}});
   var c2=echarts.init(document.getElementById('c2'));
-  c2.setOption({tooltip:tt,legend:leg,grid:grd,
-    xAxis:{type:'category',data:cl2,axisLabel:{color:'#666',fontSize:mob?9:11}},
-    yAxis:{type:'value',axisLabel:{color:'#666',fontSize:10},splitLine:{lineStyle:{color:'#e0e0e0'}}},
-    series:s2});
+  var hc=data.filter(function(m){return m.companies&&Object.keys(m.companies).length>1});
+  if(hc.length>=2){
+    // 多公司：赔率离散度
+    document.getElementById('c2title').innerText='多公司赔率离散度（主胜）';
+    var cl2=hc.slice(0,8).map(function(m){return m.home.substring(0,6)});
+    var cn=[];hc.forEach(function(m){Object.keys(m.companies).forEach(function(n){if(cn.indexOf(n)<0)cn.push(n)})});
+    var cs=['#1a6db5','#2e7d32','#e65100','#c62828','#00695c','#7b1fa2','#00838f','#ef6c00'];
+    var s2=cn.slice(0,8).map(function(n,i){return{name:n.substring(0,10),type:'bar',itemStyle:{color:cs[i%8]},barGap:'8%',data:hc.slice(0,8).map(function(m){return m.companies[n]?m.companies[n].home:null})}});
+    c2.setOption({tooltip:tt,legend:leg,grid:grd,
+      xAxis:{type:'category',data:cl2,axisLabel:{color:'#666',fontSize:mob?9:11}},
+      yAxis:{type:'value',axisLabel:{color:'#666',fontSize:10},splitLine:{lineStyle:{color:'#e0e0e0'}}},
+      series:s2});
+  }else{
+    // 单数据源：切换为 大2.5球概率（DC模型推演）
+    document.getElementById('c2title').innerText='大 2.5 球概率（模型推演）';
+    var gc=MD.filter(function(m){return m.sport==='football'&&m.totals}).slice(0,12);
+    var gl=gc.map(function(m){return m.home.substring(0,5)+'v'+m.away.substring(0,5)});
+    var gov=gc.map(function(m){return +(m.totals.p_over*100).toFixed(1)});
+    c2.setOption({tooltip:{trigger:'axis',backgroundColor:'#fff',borderColor:'#ccc',textStyle:{color:'#333',fontSize:12},formatter:function(p){return p[0].name+'<br/>大2.5球: <b>'+p[0].value+'%</b>'}},
+      grid:{top:'8%',bottom:'20%',left:'8%',right:'5%',containLabel:true},
+      xAxis:{type:'category',data:gl,axisLabel:{color:'#666',fontSize:mob?8:10,rotate:mob?40:30}},
+      yAxis:{type:'value',min:0,max:100,axisLabel:{color:'#666',fontSize:10,formatter:'{value}%'},splitLine:{lineStyle:{color:'#e0e0e0'}}},
+      series:[{type:'bar',data:gov,barWidth:'55%',itemStyle:{color:function(p){return p.value>=55?'#2e7d32':p.value>=45?'#f5a623':'#c62828'}},
+        markLine:{silent:true,symbol:'none',data:[{yAxis:50,lineStyle:{color:'#999',type:'dashed'}}]}}]});
+  }
 
   var sv=VB.slice(0,15).reverse();
   var c3=echarts.init(document.getElementById('c3'));
@@ -2979,27 +2999,57 @@ function initCharts(){
   }
 
   var c4=echarts.init(document.getElementById('c4'));
-  c4.setOption({tooltip:tt,legend:leg,grid:grd,
-    xAxis:{type:'category',data:labels,axisLabel:{color:'#666',fontSize:mob?9:11}},
-    yAxis:{type:'value',min:0,max:0.15,axisLabel:{color:'#666',fontSize:10,formatter:function(v){return(v*100).toFixed(0)+'%'}},splitLine:{lineStyle:{color:'#e0e0e0'}}},
-    series:[
-      {name:'主胜 f*',type:'bar',itemStyle:{color:'#2e7d32'},barGap:'10%',data:data.map(function(m){return m.kelly.home})},
-      {name:'平局 f*',type:'bar',itemStyle:{color:'#f5a623'},data:data.map(function(m){return m.sport==='basketball'?0:m.kelly.draw})},
-      {name:'客胜 f*',type:'bar',itemStyle:{color:'#c62828'},data:data.map(function(m){return m.kelly.away})}
-    ]});
+  var hasKelly=data.some(function(m){return (m.kelly&&(m.kelly.home>0||m.kelly.away>0||(m.sport!=='basketball'&&m.kelly.draw>0)))});
+  if(hasKelly){
+    document.getElementById('c4title').innerText='凯利f* 仓位建议';
+    c4.setOption({tooltip:tt,legend:leg,grid:grd,
+      xAxis:{type:'category',data:labels,axisLabel:{color:'#666',fontSize:mob?9:11}},
+      yAxis:{type:'value',min:0,max:0.15,axisLabel:{color:'#666',fontSize:10,formatter:function(v){return(v*100).toFixed(0)+'%'}},splitLine:{lineStyle:{color:'#e0e0e0'}}},
+      series:[
+        {name:'主胜 f*',type:'bar',itemStyle:{color:'#2e7d32'},barGap:'10%',data:data.map(function(m){return m.kelly.home})},
+        {name:'平局 f*',type:'bar',itemStyle:{color:'#f5a623'},data:data.map(function(m){return m.sport==='basketball'?0:m.kelly.draw})},
+        {name:'客胜 f*',type:'bar',itemStyle:{color:'#c62828'},data:data.map(function(m){return m.kelly.away})}
+      ]});
+  }else{
+    // 单数据源无正EV：切换为角球数量预估
+    document.getElementById('c4title').innerText='角球数量预估（预期总角球）';
+    var cc=MD.filter(function(m){return m.sport==='football'&&m.corners}).slice(0,12);
+    var ccl=cc.map(function(m){return m.home.substring(0,5)+'v'+m.away.substring(0,5)});
+    var ccv=cc.map(function(m){return m.corners.expected});
+    c4.setOption({tooltip:{trigger:'axis',backgroundColor:'#fff',borderColor:'#ccc',textStyle:{color:'#333',fontSize:12},formatter:function(p){return p[0].name+'<br/>预期角球: <b>'+p[0].value+'个</b><br/>大9.5概率: '+(cc[p[0].dataIndex].corners.p_over*100).toFixed(0)+'%'}},
+      grid:{top:'8%',bottom:'20%',left:'8%',right:'5%',containLabel:true},
+      xAxis:{type:'category',data:ccl,axisLabel:{color:'#666',fontSize:mob?8:10,rotate:mob?40:30}},
+      yAxis:{type:'value',min:8,max:13,axisLabel:{color:'#666',fontSize:10,formatter:'{value}个'},splitLine:{lineStyle:{color:'#e0e0e0'}}},
+      series:[{type:'bar',data:ccv,barWidth:'55%',itemStyle:{color:'#7b1fa2'},
+        markLine:{silent:true,symbol:'none',data:[{yAxis:9.5,lineStyle:{color:'#c62828',type:'dashed'},label:{formatter:'盘口9.5',fontSize:10}}]}}]});
+  }
 
-  var fm=MD.filter(function(m){return m.sport==='football'})[0];
+  // 选一场势均力敌、有代表性的足球比赛展示比分热力图（避免极端强弱局格子全白）
+  var fms=MD.filter(function(m){return m.sport==='football'&&m.poisson&&m.poisson.matrix&&m.poisson.matrix.length>=36});
+  var fm=null,bestScore=1e9;
+  fms.forEach(function(m){
+    var lh=m.poisson.lam_h||0,la=m.poisson.lam_a||0,tot=lh+la;
+    if(lh<=0||la<=0)return;
+    var score=Math.abs(lh-la)*2+Math.abs(tot-2.7);  // 实力越接近、总进球越接近2.7越优先
+    if(score<bestScore){bestScore=score;fm=m}
+  });
+  if(!fm&&fms.length)fm=fms[0];
   var mx=fm?fm.poisson.matrix:[];
   var hg=['0','1','2','3','4','5'],ag=['0','1','2','3','4','5'];
   var hd=mx.map(function(s){return[s.home,s.away,parseFloat((s.prob*100).toFixed(2))]});
+  var vmax=hd.length?Math.max.apply(null,hd.map(function(d){return d[2]})):15;
+  vmax=Math.max(8,Math.ceil(vmax/2)*2);
   var c5=echarts.init(document.getElementById('c5'));
   if(hd.length){
-    c5.setOption({tooltip:{backgroundColor:'#fff',borderColor:'#ccc',textStyle:{color:'#333',fontSize:12},formatter:function(p){var v=p.value;return'比分 '+v[0]+'-'+v[1]+'<br />概率: <b>'+v[2].toFixed(2)+'%</b>'}},
-      grid:{top:'8%',bottom:'14%',left:'12%',right:'10%'},
-      xAxis:{type:'category',data:hg,name:(fm?fm.home:'主队')+'进球',nameTextStyle:{color:'#666',fontSize:10},axisLabel:{color:'#666',fontSize:mob?9:11}},
-      yAxis:{type:'category',data:ag,name:(fm?fm.away:'客队')+'进球',nameTextStyle:{color:'#666',fontSize:10},axisLabel:{color:'#666',fontSize:mob?9:11}},
-      visualMap:{min:0,max:15,orient:'horizontal',left:'center',bottom:0,inRange:{color:['#f5f5f5','#c8e6c9','#66bb6a','#2e7d32','#1b5e20']},textStyle:{color:'#666',fontSize:10}},
-      series:[{type:'heatmap',data:hd,label:{show:true,fontSize:mob?8:10,color:'#333',formatter:function(p){return p.value[2]>=1?p.value[2].toFixed(1):''}},emphasis:{itemStyle:{shadowBlur:8,shadowColor:'rgba(0,0,0,.2)'}}}]});
+    c5.setOption({tooltip:{backgroundColor:'#fff',borderColor:'#ccc',textStyle:{color:'#333',fontSize:12},formatter:function(p){var v=p.value;return(fm?fm.home+' v '+fm.away:'')+'<br/>比分 '+v[0]+'-'+v[1]+'<br />概率: <b>'+v[2].toFixed(2)+'%</b>'}},
+      grid:{top:'10%',bottom:'16%',left:'12%',right:'8%',containLabel:true},
+      xAxis:{type:'category',data:hg,name:(fm?fm.home:'主队')+'进球',nameGap:4,nameTextStyle:{color:'#666',fontSize:10},axisLabel:{color:'#666',fontSize:mob?9:11},splitLine:{show:false}},
+      yAxis:{type:'category',data:ag,name:(fm?fm.away:'客队')+'进球',nameGap:4,nameTextStyle:{color:'#666',fontSize:10},axisLabel:{color:'#666',fontSize:mob?9:11},splitLine:{show:false}},
+      visualMap:{min:0,max:vmax,orient:'horizontal',left:'center',bottom:0,itemWidth:mob?10:16,itemHeight:mob?80:140,inRange:{color:['#eceff1','#e8f5e9','#a5d6a7','#66bb6a','#2e7d32','#1b5e20']},textStyle:{color:'#666',fontSize:10}},
+      series:[{type:'heatmap',data:hd,
+        itemStyle:{borderColor:'#90a4ae',borderWidth:1},
+        label:{show:true,fontSize:mob?8:10,color:'#333',formatter:function(p){return p.value[2]>=0.5?p.value[2].toFixed(1):''}},
+        emphasis:{itemStyle:{shadowBlur:8,shadowColor:'rgba(0,0,0,.2)'}}}]});
   }else{
     document.getElementById('c5').innerHTML='<div style="text-align:center;padding:60px;color:#999">暂无足球赛事</div>';
   }
