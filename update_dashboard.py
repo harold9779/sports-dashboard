@@ -99,7 +99,7 @@ SPORT_PRIORITY = {
 DEFAULT_PRIORITY = 10  # 未知联赛默认优先级
 
 # 配额保护
-MIN_REQUESTS_REMAINING = 20  # 剩余请求低于此值时停止抓取
+MIN_REQUESTS_REMAINING = 3  # 剩余请求低于此值时停止抓取(免费版每月500次, 降低阈值以充分利用)
 MAX_FOOTBALL_MATCHES = 300   # 足球最多抓取场次（提升至300）
 MAX_BASKETBALL_MATCHES = 100  # 篮球最多抓取场次（提升至100）
 
