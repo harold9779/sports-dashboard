@@ -1923,30 +1923,100 @@ def bayesian_analysis(events, sport_type='football', elo_data=None, injury_data=
         # ===== 角球数量预估模型 =====
         corner_prediction = None
         if not is_basketball:
-            # 联赛平均角球数 (基于联赛特性)
-            league_corner_avg = {
-                'soccer_epl': 10.5, 'soccer_spain_la_liga': 10.0,
-                'soccer_germany_bundesliga': 11.0, 'soccer_italy_serie_a': 9.5,
-                'soccer_france_ligue_one': 10.0, 'soccer_uefa_champs_league': 10.5,
-                'soccer_uefa_europa_league': 10.0, 'soccer_netherlands_eredivisie': 10.5,
-                'soccer_portugal_primeira_liga': 10.0, 'soccer_usa_mls': 10.5,
-                'soccer_brazil_campeonato_serie_a': 11.0, 'soccer_mexico_liga_mx': 10.0,
-            }.get(sport_key, 10.0)
+            # 联赛平均角球数 (基于联赛名称匹配, 兼容The Odds API和澳客网)
+            league_title_lower = sport_title.lower() if sport_title else ''
+            league_corner_avg_map = {
+                # 英超/英冠
+                '英超': 10.5, '英冠': 10.8, '英甲': 10.2, '英乙': 9.8,
+                'epl': 10.5, 'english premier league': 10.5,
+                # 西甲/西乙
+                '西甲': 10.0, '西乙': 9.8, 'la liga': 10.0,
+                # 德甲/德乙
+                '德甲': 11.0, '德乙': 10.5, 'bundesliga': 11.0,
+                # 意甲/意乙
+                '意甲': 9.5, '意乙': 9.2, 'serie a': 9.5, '意丁': 9.0, '意丙': 9.3,
+                # 法甲/法乙
+                '法甲': 10.0, '法乙': 9.8, 'ligue 1': 10.0,
+                # 欧战
+                '欧冠': 10.5, '欧联': 10.2, '欧罗巴': 10.2, '欧协联': 10.0,
+                'uefa champions league': 10.5, 'uefa europa league': 10.2,
+                # 荷兰/葡萄牙/比利时
+                '荷甲': 10.5, '荷乙': 10.2, '葡超': 10.0, '葡甲': 9.8,
+                '比甲': 10.0, '比乙': 9.8, '苏超': 10.2, '苏冠': 9.8,
+                '奥甲': 10.0, '奥乙': 9.8, '瑞士超': 10.0,
+                # 土耳其/俄罗斯/乌克兰
+                '土超': 10.5, '土甲': 10.0, '土杯': 10.2,
+                '俄超': 10.2, '俄甲': 9.8, '乌克超': 10.0, '乌克杯': 10.0,
+                # 亚洲联赛
+                '亚冠': 10.5, '亚冠乙': 10.2, '亚冠联': 10.2, '亚冠联2': 10.0,
+                '中超': 10.5, '中甲': 10.0, '中冠': 9.8,
+                '亚运男': 10.0, '亚运女足': 9.5, '亚运男足': 10.0,
+                'j联赛': 10.5, 'j1': 10.5, 'j2': 10.2, '日职': 10.5, '日职乙': 10.2,
+                'k联赛': 10.5, 'k1': 10.5, 'k2': 10.2, '韩k联': 10.5, '韩k2联': 10.2,
+                '澳超': 10.8, 'a-league': 10.8,
+                '泰超': 10.2, '泰甲': 9.8, '越南联': 10.0, '马来超': 10.0,
+                '印尼超': 10.0, '印西隆联': 10.0, '新加坡超': 9.8,
+                # 美洲联赛
+                '美职联': 10.5, 'mls': 10.5, '美职': 10.5,
+                '巴甲': 11.0, '巴乙': 10.8, '巴西甲': 11.0, '巴西乙': 10.8,
+                '阿超': 10.5, '阿甲': 10.5, '阿后备': 10.0,
+                '墨联': 10.0, '墨甲': 9.8, '哥伦甲': 10.2, '哥伦乙': 10.0,
+                '智利甲': 10.0, '秘鲁甲': 10.0, '委内超': 10.0,
+                '南美杯': 10.5, '南美解放者杯': 10.5, '南俱杯': 10.5,
+                # 北欧联赛
+                '瑞典超': 10.5, '瑞典甲': 10.0, '挪威超': 10.8, '挪威杯': 10.5,
+                '丹麦超': 10.2, '丹麦杯': 10.0, '芬兰超': 10.0, '冰岛超': 10.2,
+                # 东欧联赛
+                '波兰超': 10.0, '波兰甲': 9.8, '捷克甲': 10.0, '捷克杯': 10.0,
+                '匈牙利甲': 9.8, '罗马尼亚甲': 10.0, '塞尔维亚超': 9.8,
+                '塞尔甲': 9.8, '塞尔超': 9.8, '克罗甲': 10.0, '克罗杯': 10.0,
+                '希腊超': 9.8, '希腊杯': 9.8, '塞浦路斯甲': 9.8,
+                # 非洲联赛
+                '埃及超': 10.0, '埃及甲': 9.8, '南非超': 10.0, '摩洛哥超': 10.0,
+                # 杯赛/友谊赛
+                '足总杯': 10.5, '联赛杯': 10.2, '英联杯': 10.2, '国王杯': 10.0,
+                '德国杯': 10.5, '意大利杯': 9.8, '法国杯': 10.0,
+                '国际友谊': 10.0, '友谊赛': 10.0, '世预赛': 10.2,
+                '世界杯': 10.5, '欧洲杯': 10.2, '亚洲杯': 10.2,
+                # 女子比赛角球略少
+                '女': 9.0, 'women': 9.0,
+            }
+
+            # 按联赛名称匹配平均角球数
+            league_corner_avg = 10.0  # 默认值
+            matched = False
+            for key, val in league_corner_avg_map.items():
+                if key in league_title_lower or key in sport_title:
+                    league_corner_avg = val
+                    matched = True
+                    break
 
             # 基于Elo差值和进攻强度调整角球预估
-            # 强队进攻角球更多，比赛开放程度影响角球总数
             corner_base = league_corner_avg
 
             if home_elo is not None and away_elo is not None:
                 elo_diff = abs(home_elo - away_elo)
-                # 实力差距大的比赛角球更多（强队围攻）
                 corner_base += min(elo_diff / 200.0, 1.5)
-                # 双方Elo都高的比赛更开放，角球略多
                 avg_elo = (home_elo + away_elo) / 2
                 if avg_elo > 1900:
                     corner_base += 0.5
                 elif avg_elo < 1700:
                     corner_base -= 0.5
+            else:
+                # 没有Elo数据时, 用赔率强度调整 (赔率差距大→实力差距大→角球多)
+                try:
+                    odds_home = odds_median.get('home', 0)
+                    odds_away = odds_median.get('away', 0)
+                    if odds_home > 1 and odds_away > 1:
+                        # 用赔率对数差衡量实力差距
+                        odds_diff = abs(math.log(odds_home) - math.log(odds_away))
+                        corner_base += min(odds_diff * 1.2, 1.5)
+                        # 赔率低的比赛(强队多)更开放
+                        avg_odds = (odds_home + odds_away) / 2
+                        if avg_odds < 2.5:
+                            corner_base += 0.3
+                except:
+                    pass
 
             # 泊松lambda用于角球分布
             corner_lambda = max(6.0, min(16.0, corner_base))
