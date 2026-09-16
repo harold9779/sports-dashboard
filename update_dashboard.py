@@ -17,6 +17,14 @@ from datetime import datetime, timezone, timedelta
 from urllib.request import urlopen, Request
 from urllib.parse import urlencode
 
+# 澳客网爬虫(免费数据源, 无需API Key)
+try:
+    import okooo_scraper
+    OKOOO_AVAILABLE = True
+except ImportError:
+    OKOOO_AVAILABLE = False
+    print('WARNING: okooo_scraper模块未找到, 将仅使用The Odds API')
+
 API_KEY = os.environ.get('ODDS_API_KEY', '')
 REPO_DIR = os.environ.get('GITHUB_WORKSPACE', os.path.dirname(os.path.abspath(__file__)))
 
@@ -259,6 +267,107 @@ def fetch_odds(sport_key, regions='eu,uk,us', markets='h2h,totals,spreads', odds
     except Exception as e:
         print(f'  {sport_key}: ERROR - {e}')
         return []
+
+
+# ========== 多源数据去重合并 ==========
+def normalize_team_name(name):
+    """归一化球队名称用于匹配"""
+    if not name:
+        return ''
+    # 去除空格、标点，统一小写
+    name = re.sub(r'[\s\-_./()\[\]{}]', '', name)
+    name = name.lower().strip()
+    return name
+
+
+def is_same_match(m1, m2, time_tolerance_hours=2):
+    """判断两场比赛是否为同一场"""
+    # 归一化球队名称
+    h1 = normalize_team_name(m1.get('home_team', ''))
+    a1 = normalize_team_name(m1.get('away_team', ''))
+    h2 = normalize_team_name(m2.get('home_team', ''))
+    a2 = normalize_team_name(m2.get('away_team', ''))
+
+    if not h1 or not a1 or not h2 or not a2:
+        return False
+
+    # 球队匹配 (主客对调也算)
+    teams_match = (h1 == h2 and a1 == a2) or (h1 == a2 and a1 == h2)
+    if not teams_match:
+        return False
+
+    # 时间匹配 (相差不超过time_tolerance_hours小时)
+    try:
+        t1 = datetime.strptime(m1.get('commence_time', ''), '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+        t2 = datetime.strptime(m2.get('commence_time', ''), '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+        time_diff = abs((t1 - t2).total_seconds())
+        return time_diff <= time_tolerance_hours * 3600
+    except:
+        # 时间解析失败时，只靠球队名匹配
+        return True
+
+
+def merge_bookmakers(m1, m2):
+    """合并两场比赛的博彩公司数据"""
+    merged = dict(m1)  # 复制m1
+    bm_keys = set()
+    merged_bookmakers = []
+
+    # 先加入m1的博彩公司
+    for bm in m1.get('bookmakers', []):
+        bm_keys.add(bm.get('key', ''))
+        merged_bookmakers.append(bm)
+
+    # 再加入m2中不重复的博彩公司
+    for bm in m2.get('bookmakers', []):
+        if bm.get('key', '') not in bm_keys:
+            merged_bookmakers.append(bm)
+            bm_keys.add(bm.get('key', ''))
+
+    merged['bookmakers'] = merged_bookmakers
+
+    # 保留更多信息的源的联赛名称
+    if len(m2.get('sport_title', '')) > len(m1.get('sport_title', '')):
+        merged['sport_title'] = m2['sport_title']
+
+    # 标记为合并数据
+    merged['merged_sources'] = list(set(
+        [m1.get('source', 'theoddsapi')] + [m2.get('source', 'theoddsapi')]
+    ))
+
+    return merged
+
+
+def merge_and_deduplicate(primary_events, secondary_events):
+    """
+    合并两个数据源的比赛数据，去重
+    primary_events: 主数据源(优先保留，如The Odds API)
+    secondary_events: 补充数据源(如澳客网爬虫)
+    """
+    if not secondary_events:
+        return primary_events
+
+    merged = list(primary_events)
+    added_count = 0
+    merged_count = 0
+
+    for sec_event in secondary_events:
+        found = False
+        for i, prim_event in enumerate(merged):
+            if is_same_match(prim_event, sec_event):
+                # 同一场比赛，合并博彩公司数据
+                merged[i] = merge_bookmakers(prim_event, sec_event)
+                merged_count += 1
+                found = True
+                break
+        if not found:
+            # 新比赛，添加
+            merged.append(sec_event)
+            added_count += 1
+
+    print(f'  多源合并: 主源{len(primary_events)}场 + 补充源{len(secondary_events)}场')
+    print(f'  合并重复{merged_count}场, 新增{added_count}场, 合计{len(merged)}场')
+    return merged
 
 
 # ========== Shin 去水法 ==========
@@ -1695,7 +1804,7 @@ def bayesian_analysis(events, sport_type='football', elo_data=None, injury_data=
                                 'under': under_odds
                             }
 
-        if len(odds_by_company) < 2:
+        if len(odds_by_company) < 1:
             continue
 
         def median(lst):
@@ -2649,6 +2758,30 @@ def main():
     football_events.sort(key=lambda e: e.get('commence_time', ''))
     basketball_events.sort(key=lambda e: e.get('commence_time', ''))
     print(f'已按开赛时间排序')
+
+    # 标记The Odds API数据来源
+    for e in football_events:
+        e['source'] = 'theoddsapi'
+    for e in basketball_events:
+        e['source'] = 'theoddsapi'
+
+    # ========== 多源数据补充: 澳客网爬虫(免费, 无需API Key) ==========
+    if OKOOO_AVAILABLE:
+        print('\n--- 澳客网爬虫补充数据 (免费源) ---')
+        try:
+            okooo_football = okooo_scraper.fetch_football_matches(days_ahead=7)
+            if okooo_football:
+                print(f'澳客网获取到 {len(okooo_football)} 场足球比赛')
+                # 合并去重 (The Odds API优先, 澳客网补充)
+                football_events = merge_and_deduplicate(football_events, okooo_football)
+                # 重新按开赛时间排序
+                football_events.sort(key=lambda e: e.get('commence_time', ''))
+            else:
+                print('澳客网未获取到比赛数据')
+        except Exception as e:
+            print(f'澳客网爬虫出错: {e}')
+    else:
+        print('\n--- 澳客网爬虫模块不可用, 跳过 ---')
 
     # 篮球简易Elo（基于市场赔率反推）
     basketball_elo_data = estimate_basketball_elo_from_odds(basketball_events)
