@@ -13,7 +13,7 @@
   9. 配额保护: 剩余请求不足时自动停止, 避免API限流
 """
 import json, math, os, re, sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.request import urlopen, Request
 from urllib.parse import urlencode
 
@@ -234,12 +234,20 @@ def translate_league_name(name):
 PRIOR_STRENGTH = 5.0
 
 
-def fetch_odds(sport_key, regions='eu,uk,us', markets='h2h,totals,spreads', odds_format='decimal'):
+def fetch_odds(sport_key, regions='eu,uk,us', markets='h2h,totals,spreads', odds_format='decimal', days_ahead=7):
     global requests_remaining
     if requests_remaining < MIN_REQUESTS_REMAINING:
         print(f'  {sport_key}: SKIP (剩余请求不足: {requests_remaining})')
         return []
-    params = urlencode({'apiKey': API_KEY, 'regions': regions, 'markets': markets, 'oddsFormat': odds_format})
+    # 时间范围: 从现在到未来days_ahead天
+    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    end_iso = (datetime.now(timezone.utc) + timedelta(days=days_ahead)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    params = urlencode({
+        'apiKey': API_KEY, 'regions': regions, 'markets': markets,
+        'oddsFormat': odds_format,
+        'commenceTimeFrom': now_iso,
+        'commenceTimeTo': end_iso,
+    })
     url = f'https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?{params}'
     try:
         req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -2595,18 +2603,21 @@ def main():
         all_sports = [{'key': k, 'title': k, 'active': True} for k in FOOTBALL_SPORTS + BASKETBALL_SPORTS]
 
     # 筛选足球和篮球联赛, 按优先级排序
+    # 只请求优先级<=4的联赛, 节省API配额(免费版每月500次)
+    MAX_FOOTBALL_LEAGUES = 15
+    MAX_BASKETBALL_LEAGUES = 8
     football_leagues = sorted(
-        [s for s in all_sports if s['key'].startswith('soccer_')],
+        [s for s in all_sports if s['key'].startswith('soccer_') and get_sport_priority(s['key']) <= 4],
         key=lambda s: get_sport_priority(s['key'])
-    )
+    )[:MAX_FOOTBALL_LEAGUES]
     basketball_leagues = sorted(
-        [s for s in all_sports if s['key'].startswith('basketball_')],
+        [s for s in all_sports if s['key'].startswith('basketball_') and get_sport_priority(s['key']) <= 4],
         key=lambda s: get_sport_priority(s['key'])
-    )
-    print(f'足球联赛: {len(football_leagues)} 个')
-    print(f'篮球联赛: {len(basketball_leagues)} 个')
-    print(f'足球前10: {[s["key"] for s in football_leagues[:10]]}')
-    print(f'篮球前5: {[s["key"] for s in basketball_leagues[:5]]}')
+    )[:MAX_BASKETBALL_LEAGUES]
+    print(f'足球联赛(优先级<=4, 最多{MAX_FOOTBALL_LEAGUES}个): {len(football_leagues)} 个')
+    print(f'篮球联赛(优先级<=4, 最多{MAX_BASKETBALL_LEAGUES}个): {len(basketball_leagues)} 个')
+    print(f'足球联赛: {[s["key"] for s in football_leagues]}')
+    print(f'篮球联赛: {[s["key"] for s in basketball_leagues]}')
 
     print('\n--- 足球赛事 (全球) ---')
     football_events = []
@@ -2633,6 +2644,11 @@ def main():
         basketball_events.extend(events)
 
     print(f'\n抓取汇总: 足球 {len(football_events)} 场 / 篮球 {len(basketball_events)} 场 / 剩余请求 {requests_remaining}')
+
+    # 按开赛时间排序
+    football_events.sort(key=lambda e: e.get('commence_time', ''))
+    basketball_events.sort(key=lambda e: e.get('commence_time', ''))
+    print(f'已按开赛时间排序')
 
     # 篮球简易Elo（基于市场赔率反推）
     basketball_elo_data = estimate_basketball_elo_from_odds(basketball_events)
