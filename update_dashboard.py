@@ -280,9 +280,30 @@ def normalize_team_name(name):
     return name
 
 
-def is_same_match(m1, m2, time_tolerance_hours=2):
-    """判断两场比赛是否为同一场"""
-    # 归一化球队名称
+def string_similarity(s1, s2):
+    """计算两个字符串的相似度 (0-1)，基于编辑距离"""
+    if not s1 or not s2:
+        return 0.0
+    if s1 == s2:
+        return 1.0
+    m, n = len(s1), len(s2)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m + 1):
+        dp[i][0] = i
+    for j in range(n + 1):
+        dp[0][j] = j
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if s1[i-1] == s2[j-1]:
+                dp[i][j] = dp[i-1][j-1]
+            else:
+                dp[i][j] = 1 + min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
+    max_len = max(m, n)
+    return 1.0 - dp[m][n] / max_len if max_len > 0 else 0.0
+
+
+def is_same_match(m1, m2, time_tolerance_hours=3, name_similarity_threshold=0.7):
+    """判断两场比赛是否为同一场 (支持模糊匹配)"""
     h1 = normalize_team_name(m1.get('home_team', ''))
     a1 = normalize_team_name(m1.get('away_team', ''))
     h2 = normalize_team_name(m2.get('home_team', ''))
@@ -291,19 +312,34 @@ def is_same_match(m1, m2, time_tolerance_hours=2):
     if not h1 or not a1 or not h2 or not a2:
         return False
 
-    # 球队匹配 (主客对调也算)
-    teams_match = (h1 == h2 and a1 == a2) or (h1 == a2 and a1 == h2)
-    if not teams_match:
+    # 精确匹配 (主客对调也算)
+    exact_match = (h1 == h2 and a1 == a2) or (h1 == a2 and a1 == h2)
+    if exact_match:
+        try:
+            t1 = datetime.strptime(m1.get('commence_time', ''), '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+            t2 = datetime.strptime(m2.get('commence_time', ''), '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+            return abs((t1 - t2).total_seconds()) <= time_tolerance_hours * 3600
+        except:
+            return True
+
+    # 模糊匹配
+    sim_hh = string_similarity(h1, h2)
+    sim_aa = string_similarity(a1, a2)
+    sim_ha = string_similarity(h1, a2)
+    sim_ah = string_similarity(a1, h2)
+
+    fuzzy_match = (sim_hh >= name_similarity_threshold and sim_aa >= name_similarity_threshold) or \
+                  (sim_ha >= name_similarity_threshold and sim_ah >= name_similarity_threshold)
+
+    if not fuzzy_match:
         return False
 
-    # 时间匹配 (相差不超过time_tolerance_hours小时)
+    # 模糊匹配时时间容差更大
     try:
         t1 = datetime.strptime(m1.get('commence_time', ''), '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
         t2 = datetime.strptime(m2.get('commence_time', ''), '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
-        time_diff = abs((t1 - t2).total_seconds())
-        return time_diff <= time_tolerance_hours * 3600
+        return abs((t1 - t2).total_seconds()) <= (time_tolerance_hours + 6) * 3600
     except:
-        # 时间解析失败时，只靠球队名匹配
         return True
 
 

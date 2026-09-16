@@ -8,12 +8,22 @@
 
 import re
 import time
+import random
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
-from urllib.error import URLError
+from urllib.error import URLError, HTTPError
 
 logger = logging.getLogger(__name__)
+
+# User-Agent轮换池
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+]
 
 # 澳客网联赛ID -> 联赛名称映射(常用联赛)
 LEAGUE_MAP = {
@@ -49,26 +59,52 @@ HANDICAP_MAP = {
 }
 
 
-def fetch_okooo_page(url, referer='https://www.okooo.com/', timeout=20):
-    """获取澳客网页面，处理gb2312编码"""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Referer': referer,
-    }
-    try:
-        req = Request(url, headers=headers)
-        with urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            # 尝试gb2312解码，失败则用utf-8
-            try:
-                return raw.decode('gb2312', errors='ignore')
-            except:
-                return raw.decode('utf-8', errors='ignore')
-    except Exception as e:
-        logger.error(f'澳客网页面获取失败 {url}: {e}')
-        return ''
+def fetch_okooo_page(url, referer='https://www.okooo.com/', timeout=20, max_retries=3):
+    """获取澳客网页面，处理gb2312编码，带重试和反爬策略"""
+    for attempt in range(max_retries):
+        headers = {
+            'User-Agent': random.choice(USER_AGENTS),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Referer': referer,
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+        }
+        try:
+            req = Request(url, headers=headers)
+            with urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                # 处理gzip压缩
+                if resp.headers.get('Content-Encoding') == 'gzip':
+                    import gzip
+                    raw = gzip.decompress(raw)
+                try:
+                    return raw.decode('gb2312', errors='ignore')
+                except:
+                    return raw.decode('utf-8', errors='ignore')
+        except HTTPError as e:
+            if e.code == 405 or e.code == 403:
+                # 被反爬拦截，等待更长时间
+                wait_time = 10 * (attempt + 1)
+                logger.warning(f'澳客网反爬拦截({e.code})，等待{wait_time}秒后重试({attempt+1}/{max_retries})')
+                time.sleep(wait_time)
+                continue
+            logger.error(f'澳客网HTTP错误 {e.code}: {url}')
+            if attempt < max_retries - 1:
+                time.sleep(3 * (attempt + 1))
+                continue
+            return ''
+        except Exception as e:
+            logger.error(f'澳客网页面获取失败 {url}: {e}')
+            if attempt < max_retries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+            return ''
+    return ''
 
 
 def parse_okooo_matches(html):
